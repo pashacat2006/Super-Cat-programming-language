@@ -1,0 +1,11 @@
+import Token from "../Token";
+import ExpressionNode from "./ExpressionNode";
+
+export class UnarOperatorNode {
+    operator: Token;
+    operand: ExpressionNode;
+    constructor(operator: Token, operand: ExpressionNode) {
+        this.operator = operator;
+        this.operand = operand;
+    }
+}
