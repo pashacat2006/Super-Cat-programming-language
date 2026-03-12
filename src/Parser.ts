@@ -1,5 +1,7 @@
 import BinOperatorNode from "./AST/BinOperatorNode";
 import ExpressionNode from "./AST/ExpressionNode";
+import ForEachNode from "./AST/ForEachNode";
+import ListOpNode from "./AST/ListOpNode";
 import { NumberNode } from "./AST/NumberNode";
 import StatementsNode from "./AST/StatementsNode";
 import { UnarOperatorNode } from "./AST/unarOperatorNode";
@@ -50,6 +52,10 @@ export default class Parser {
         if (str != null) {
             return new StringNode(str);
         }
+        const emoji = this.match(tokenTypesList.EMOJI);
+        if (emoji != null) {
+            return new EmojiNode(emoji);
+        }
         const number = this.match(tokenTypesList.NUMBER);
         if (number != null) {
             return new NumberNode(number);
@@ -66,6 +72,67 @@ export default class Parser {
             return new UnarOperatorNode(token, this.parseFormula());
         } 
         throw new Error(`Ожидается оператор вывода на позиции ${this.pos} Error ParsePrint 1`);
+    }
+    // ── list <name> [ v1 v2 ... ] ─────────────────────────────────────────────
+    parseListCreate(): ExpressionNode {
+        const operator = this.require(tokenTypesList.LIST);
+        const nameToken = this.require(tokenTypesList.VARIABLE);
+        this.require(tokenTypesList.LBRACKET);
+        const elements: ExpressionNode[] = [];
+        while (this.match(tokenTypesList.RBRACKET) == null) {
+            elements.push(this.parseVariableOrNuber());
+        }
+        return new ListOpNode(operator, nameToken, elements);
+    }
+    // ── push <name> <value> ───────────────────────────────────────────────────
+    parseListPush(): ExpressionNode {
+        const operator = this.require(tokenTypesList.PUSH);
+        const nameToken = this.require(tokenTypesList.VARIABLE);
+        const value = this.parseVariableOrNuber();
+        return new ListOpNode(operator, nameToken, [value]);
+    }
+    // ── pop <name> ────────────────────────────────────────────────────────────
+    parseListPop(): ExpressionNode {
+        const operator = this.require(tokenTypesList.POP);
+        const nameToken = this.require(tokenTypesList.VARIABLE);
+        return new ListOpNode(operator, nameToken, []);
+    }
+    // ── getlist <name> <index> ────────────────────────────────────────────────
+    parseGetList(): ExpressionNode {
+        const operator = this.require(tokenTypesList.GETLIST);
+        const nameToken = this.require(tokenTypesList.VARIABLE);
+        const index = this.parseVariableOrNuber();
+        return new ListOpNode(operator, nameToken, [index]);
+    }
+    // ── sort asc|desc <name> ──────────────────────────────────────────────────
+    parseSortList(): ExpressionNode {
+        const operator = this.require(tokenTypesList.SORT);
+        const direction = this.match(tokenTypesList.ASC, tokenTypesList.DESC);
+        if (!direction) {
+            throw new Error(`После sort ожидается asc или desc на позиции ${this.pos}`);
+        }
+        const nameToken = this.require(tokenTypesList.VARIABLE);
+        return new ListOpNode(operator, nameToken, [new VariableNode(direction)]);
+    }
+    // ── fore <list> <item> [ ...body ] ────────────────────────────────────────
+    parseForEach(): ExpressionNode {
+        this.require(tokenTypesList.FORE);
+        const listName = this.require(tokenTypesList.VARIABLE);
+        const itemName = this.require(tokenTypesList.VARIABLE);
+        this.require(tokenTypesList.LBRACKET);
+
+        const body = new StatementsNode();
+        while (
+            this.pos < this.tokens.length &&
+            this.peek()?.type.name !== tokenTypesList.RBRACKET.name
+        ) {
+            body.addNode(this.parseExpression());
+            this.require(tokenTypesList.START);
+            this.require(tokenTypesList.SEMICOLON);
+        }
+        this.require(tokenTypesList.RBRACKET);
+
+        return new ForEachNode(listName, itemName, body);
     }
     parseAddKey(): ExpressionNode {
         const operator = this.require(tokenTypesList.ADDKEY);
@@ -119,6 +186,13 @@ export default class Parser {
         if (next.type.name === tokenTypesList.ADDKEY.name) {
             return this.parseAddKey();
         }
+
+        if (next.type.name === tokenTypesList.LIST.name)    return this.parseListCreate();
+        if (next.type.name === tokenTypesList.PUSH.name)    return this.parseListPush();
+        if (next.type.name === tokenTypesList.POP.name)     return this.parseListPop();
+        if (next.type.name === tokenTypesList.GETLIST.name) return this.parseGetList();
+        if (next.type.name === tokenTypesList.SORT.name)    return this.parseSortList();
+        if (next.type.name === tokenTypesList.FORE.name)    return this.parseForEach();
 
         return this.parsePrint();
           
@@ -199,6 +273,57 @@ export default class Parser {
             } else {
                 throw new Error(`Переменая ${node.variable.text} не существует Error NotVariable 5`);
             }
+        }
+        if (node instanceof ListOpNode) {
+            const name = node.name.text;
+            switch (node.operator.type.name) {
+                case tokenTypesList.LIST.name:
+                    this.scope[name] = node.args.map(a => this.run(a));
+                    return;
+                case tokenTypesList.PUSH.name:
+                    if (!Array.isArray(this.scope[name]))
+                        throw new Error(`Переменная ${name} не является списком`);
+                    this.scope[name].push(this.run(node.args[0]));
+                    return;
+                case tokenTypesList.POP.name:
+                    if (!Array.isArray(this.scope[name]))
+                        throw new Error(`Переменная ${name} не является списком`);
+                    this.scope[name].pop();
+                    return;
+                case tokenTypesList.GETLIST.name: {
+                    if (!Array.isArray(this.scope[name]))
+                        throw new Error(`Переменная ${name} не является списком`);
+                    const idx = this.run(node.args[0]);
+                    const item = this.scope[name][idx];
+                    console.log(item !== undefined ? item : `undefined (index ${idx})`);
+                    return;
+                }
+                case tokenTypesList.SORT.name: {
+                    if (!Array.isArray(this.scope[name]))
+                        throw new Error(`Переменная ${name} не является списком`);
+                    const dirNode = node.args[0];
+                    const dir = dirNode instanceof VariableNode
+                        ? (dirNode as VariableNode).variable.text
+                        : "asc";
+                    this.scope[name].sort((a: any, b: any) => {
+                        const na = typeof a === "number" ? a : Number(a);
+                        const nb = typeof b === "number" ? b : Number(b);
+                        return dir === "desc" ? nb - na : na - nb;
+                    });
+                    return;
+                }
+            }
+        }
+        if (node instanceof ForEachNode) {
+            const list = this.scope[node.listName.text];
+            if (!Array.isArray(list))
+                throw new Error(`Переменная ${node.listName.text} не является списком`);
+            for (const item of list) {
+                this.scope[node.itemName.text] = item;
+                this.run(node.body);
+            }
+            delete this.scope[node.itemName.text];
+            return;
         }
         if (node instanceof StatementsNode) {
             node.codeStrings.forEach(codeString => {
